@@ -1,0 +1,99 @@
+#!/usr/bin/python3
+
+import argparse
+import re
+import sys
+from configparser import ConfigParser
+from os import chmod, makedirs
+from os.path import join, isabs, abspath, exists
+from subprocess import call, check_call, CalledProcessError
+from tempfile import TemporaryDirectory
+
+from requests import Session
+from requests.auth import HTTPBasicAuth
+
+KERNEL_VERSION = re.compile(r"^Linux version (\d+)\.(\d+)\.(\d+)")
+
+parser = argparse.ArgumentParser("Karellen Sysbox GitHub Action Runner Service Wrapper")
+parser.add_argument("--config", default="/etc/sysconfig/karellen-sysbox-ghar")
+parser.add_argument("--tmp-dir", default=None)
+parser.add_argument("--image", default="ghcr.io/karellen/karellen-gha-runner:latest")
+parser.add_argument("service")
+
+
+def main():
+    args = parser.parse_args()
+    service_name = args.service
+
+    config = ConfigParser()
+    config.read(args.config)
+
+    with Session() as s:
+        def post(url, key=None, auth=None, headers=None, data=None):
+            h = {}
+            if headers:
+                h.update(headers)
+            h.update({"X-GitHub-Api-Version": "2022-11-28",
+                      "Accept": "application/vnd.github+json"})
+            if key:
+                h["Authorization"] = f"Bearer {key}"
+            if auth:
+                auth = HTTPBasicAuth(*auth)
+            with s.post(f"https://{config['github'].get('api-host', 'api.github.com')}/{url}",
+                        headers=h,
+                        auth=auth,
+                        data=data,
+                        ) as r:
+                r.raise_for_status()
+                return r.json()
+
+        reg_token = post(f"orgs/{config['github']['organization']}/actions/runners/registration-token",
+                         config["github"]["pat-token"])["token"]
+        if False:
+            rem_token = post(f"orgs/{config['github']['organization']}/actions/runners/remove-token",
+                             config["github"]["pat-token"])["token"]
+
+    with open("/proc/version", "rt") as f:
+        version = tuple(map(int, KERNEL_VERSION.match(f.read()).groups()[0:3]))
+
+    # This is due to ID-mapping features: https://github.com/nestybox/sysbox/issues/689#issuecomment-1532460385
+    mountable_tmp_dir = args.tmp_dir
+    if not mountable_tmp_dir and version < (6, 3):
+        mountable_tmp_dir = f"/var/lib/{service_name}"
+
+    if mountable_tmp_dir:
+        if not isabs(mountable_tmp_dir):
+            mountable_tmp_dir = abspath(mountable_tmp_dir)
+
+        if not exists(mountable_tmp_dir):
+            makedirs(mountable_tmp_dir, mode=0o700, exist_ok=True)
+
+    with TemporaryDirectory(dir=mountable_tmp_dir, ignore_cleanup_errors=False) as tmp_dir:
+        chmod(tmp_dir, 0o700)
+
+        reg_f_name = join(tmp_dir, "registration_token")
+        with open(reg_f_name, "wt") as reg_f:
+            reg_f.write(reg_token)
+        chmod(reg_f_name, 0o600)
+
+        if False:
+            rem_f_name = join(tmp_dir, "removal_token")
+            with open(rem_f_name, "wt") as rem_f:
+                rem_f.write(rem_token)
+            chmod(rem_f_name, 0o600)
+
+        image = config["service"].get("image", args.image)
+        try:
+            call(["docker", "pull", image])
+
+            check_call(["docker", "run", "--rm", "-t", "--runtime", "sysbox-runc",
+                        "--name", service_name,
+                        "-v", f"{tmp_dir}:/home/runner/__secure",
+                        image])
+
+        except CalledProcessError as e:
+            return e.returncode
+
+
+if __name__ == "__main__":
+    sys.exit(main())

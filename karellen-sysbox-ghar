@@ -1,0 +1,10 @@
+[github]
+# Required:
+# pat-token=<your token>
+# organization=<your organization>
+
+# Optional:
+# api-host=api.github.com
+
+[service]
+# image=ghcr.io/karellen/karellen-gha-runner:latest

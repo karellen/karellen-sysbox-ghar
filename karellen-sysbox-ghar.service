@@ -1,0 +1,25 @@
+[Unit]
+Description=Karellen GitHub Actions Runner in Docker Sysbox
+After=docker.service
+After=network.target
+After=sysbox.service
+Requires=docker.service
+Requires=sysbox.service
+
+[Service]
+Type=exec
+ExecStartPre=-/usr/bin/docker stop %n
+ExecStartPre=-/usr/bin/docker rm %n
+ExecStart=/usr/sbin/karellen-sysbox-ghar-wrapper %n
+ExecStop=/usr/bin/docker stop %n
+TimeoutStartSec=10
+TimeoutStopSec=30
+StartLimitInterval=0
+OOMScoreAdjust=-500
+StandardOutput=journal
+StandardError=journal
+Restart=on-success
+KillSignal=SIGCONT
+
+[Install]
+WantedBy=multi-user.target
