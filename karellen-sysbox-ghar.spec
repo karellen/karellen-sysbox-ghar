@@ -1,7 +1,7 @@
 %global debug_package %{nil}
 
 Name: karellen-sysbox-ghar
-Version: 0.0.0
+Version: 0.0.1
 Release: 1
 License: ASL 2.0
 Summary: Karellen GitHub Actions Runner for Sysbox Containers
@@ -45,4 +45,6 @@ install -Dpm 644 karellen-sysbox-ghar.service -t %{buildroot}%{_unitdir}/
 %systemd_postun_with_restart karellen-sysbox-ghar.service
 
 %changelog
+* Sat May 06 2023 Arcadiy Ivanov <arcadiy@ivanov.biz> 0.0.1-1
+- Initial release
 
