@@ -5,6 +5,8 @@
 
 # Optional:
 # api-host=api.github.com
+# connection-timeout=5
+# read-timeout=15
 
 [service]
 # image=ghcr.io/karellen/karellen-gha-runner:latest

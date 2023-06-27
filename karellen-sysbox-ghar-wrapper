@@ -10,6 +10,7 @@ from subprocess import call, check_call, CalledProcessError
 from tempfile import TemporaryDirectory
 
 from requests import Session
+from requests.exceptions import HTTPError, RequestException
 from requests.auth import HTTPBasicAuth
 
 KERNEL_VERSION = re.compile(r"^Linux version (\d+)\.(\d+)\.(\d+)")
@@ -30,22 +31,31 @@ def main():
 
     with Session() as s:
         def post(url, key=None, auth=None, headers=None, data=None):
-            h = {}
-            if headers:
-                h.update(headers)
-            h.update({"X-GitHub-Api-Version": "2022-11-28",
-                      "Accept": "application/vnd.github+json"})
-            if key:
-                h["Authorization"] = f"Bearer {key}"
-            if auth:
-                auth = HTTPBasicAuth(*auth)
-            with s.post(f"https://{config['github'].get('api-host', 'api.github.com')}/{url}",
-                        headers=h,
-                        auth=auth,
-                        data=data,
-                        ) as r:
-                r.raise_for_status()
-                return r.json()
+            while True:
+                h = {}
+                if headers:
+                    h.update(headers)
+                h.update({"X-GitHub-Api-Version": "2022-11-28",
+                          "Accept": "application/vnd.github+json"})
+                if key:
+                    h["Authorization"] = f"Bearer {key}"
+                if auth:
+                    auth = HTTPBasicAuth(*auth)
+                try:
+                    with s.post(f"https://{config['github'].get('api-host', 'api.github.com')}/{url}",
+                                headers=h,
+                                auth=auth,
+                                data=data,
+                                timeout=(float(config["github"].get("connection-timeout", "5")),
+                                         float(config["github"].get("read-timeout", "15"))),
+                                ) as r:
+                        r.raise_for_status()
+                        return r.json()
+                except RequestException as e:
+                    if e.response and e.response.status_code and 400 <= e.response.status_code <= 407:
+                        raise
+                    print(f"restarting due to GitHub API error {e}", file=sys.stderr)
+                    return 0
 
         reg_token = post(f"orgs/{config['github']['organization']}/actions/runners/registration-token",
                          config["github"]["pat-token"])["token"]

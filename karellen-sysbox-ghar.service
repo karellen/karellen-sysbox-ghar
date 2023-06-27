@@ -1,8 +1,9 @@
 [Unit]
 Description=Karellen GitHub Actions Runner in Docker Sysbox
 After=docker.service
-After=network.target
+After=network-online.target
 After=sysbox.service
+Requires=network-online.target
 Requires=docker.service
 Requires=sysbox.service
 
