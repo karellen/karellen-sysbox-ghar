@@ -24,3 +24,4 @@ KillSignal=SIGCONT
 
 [Install]
 WantedBy=multi-user.target
+WantedBy=sysbox.service
