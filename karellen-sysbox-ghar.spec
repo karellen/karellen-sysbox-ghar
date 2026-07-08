@@ -1,7 +1,7 @@
 %global debug_package %{nil}
 
 Name: karellen-sysbox-ghar
-Version: 0.0.5
+Version: 0.0.6
 Release: 1
 License: ASL 2.0
 Summary: Karellen GitHub Actions Runner for Sysbox Containers
@@ -48,6 +48,9 @@ fi
 %systemd_postun_with_restart karellen-sysbox-ghar.service
 
 %changelog
+* Tue Jul 07 2026 Arcadiy Ivanov <arcadiy@ivanov.biz> 0.0.6-1
+- Restore wrapper to pre-gevent state (arcadiy@ivanov.biz)
+
 * Tue Jul 07 2026 Arcadiy Ivanov <arcadiy@ivanov.biz> 0.0.5-1
 - Remove Gevent from dependencies (arcadiy@ivanov.biz)
 
