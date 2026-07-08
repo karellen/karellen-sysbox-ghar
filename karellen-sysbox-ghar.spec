@@ -1,7 +1,7 @@
 %global debug_package %{nil}
 
 Name: karellen-sysbox-ghar
-Version: 0.0.3
+Version: 0.0.4
 Release: 1
 License: ASL 2.0
 Summary: Karellen GitHub Actions Runner for Sysbox Containers
@@ -12,6 +12,7 @@ BuildRequires: systemd-rpm-macros
 Requires: karellen-sysbox
 Requires: python3
 Requires: python3-requests
+Requires: python3-gevent
 
 Source0: %{name}-%{version}.tar.gz
 
@@ -48,6 +49,11 @@ fi
 %systemd_postun_with_restart karellen-sysbox-ghar.service
 
 %changelog
+* Tue Jul 07 2026 Arcadiy Ivanov <arcadiy@ivanov.biz> 0.0.4-1
+- Reenable service on package upgrade to apply new [Install] symlinks
+  (arcadiy@ivanov.biz)
+- Restart with sysbox.service when sysbox is restarted (arcadiy@ivanov.biz)
+
 * Tue Jun 27 2023 Arcadiy Ivanov <arcadiy@ivanov.biz> 0.0.3-1
 - Ensure retries on recoverable GitHub API failures Make sure to require
   network being online Add connection and read timeout options
