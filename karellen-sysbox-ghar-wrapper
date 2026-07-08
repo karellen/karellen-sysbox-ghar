@@ -1,196 +1,108 @@
 #!/usr/bin/python3
 
-from gevent.monkey import patch_all
-
-patch_all()
-
 import argparse
 import re
 import sys
 from configparser import ConfigParser
 from os import chmod, makedirs
-from os.path import join, isabs, abspath, exists, isdir
+from os.path import join, isabs, abspath, exists
 from subprocess import call, check_call, CalledProcessError
-from tempfile import TemporaryDirectory, gettempdir
+from tempfile import TemporaryDirectory
 
 from requests import Session
-from requests.exceptions import RequestException
+from requests.exceptions import HTTPError, RequestException
 from requests.auth import HTTPBasicAuth
-from datetime import datetime, timedelta
-from glob import glob
 
 KERNEL_VERSION = re.compile(r"^Linux version (\d+)\.(\d+)\.(\d+)")
 
 parser = argparse.ArgumentParser("Karellen Sysbox GitHub Action Runner Service Wrapper")
 parser.add_argument("--config", default="/etc/sysconfig/karellen-sysbox-ghar")
 parser.add_argument("--tmp-dir", default=None)
+parser.add_argument("--image", default="ghcr.io/karellen/karellen-gha-runner:latest")
 parser.add_argument("service")
-
-DEFAULT_TOKEN_EXPIRATION_DURATION = timedelta(minutes=5)
-LINUX_NODE_DIR = "/sys/devices/system/node"
 
 
 def main():
     args = parser.parse_args()
-    wrapper = KarellenGHARWrapper(args.service, args.config, args.tmp_dir)
-    wrapper.init()
-    print(wrapper.cpuset_args())
-    print(wrapper.cpuset_args())
+    service_name = args.service
 
+    config = ConfigParser()
+    config.read(args.config)
 
-def log(*args):
-    print(*args)
-
-
-def log_err(*args):
-    print(*args, file=sys.stderr)
-
-
-class KarellenGHARWrapper:
-    def __init__(self, service_name, config_file, tmp_dir):
-        self.service_name = service_name
-        self.config_file = config_file
-        self.tmp_dir = tmp_dir
-        self.config = ConfigParser()
-        self.config.read(config_file)
-
-        self.reg_token = None
-        self.reg_token_expires = None
-        self.mountable_tmp_dir = None
-
-        self.numa_nodes = {}
-        self.current_numa_node = 0
-
-        self.cpuset_args = None
-
-    def _get_numa_node(self):
-        node = self.current_numa_node
-        try:
+    with Session() as s:
+        def post(url, key=None, auth=None, headers=None, data=None):
             while True:
+                h = {}
+                if headers:
+                    h.update(headers)
+                h.update({"X-GitHub-Api-Version": "2022-11-28",
+                          "Accept": "application/vnd.github+json"})
+                if key:
+                    h["Authorization"] = f"Bearer {key}"
+                if auth:
+                    auth = HTTPBasicAuth(*auth)
                 try:
-                    return node, self.numa_nodes[node]
-                except KeyError:
-                    node = 0
-        finally:
-            self.current_numa_node = node + 1
+                    with s.post(f"https://{config['github'].get('api-host', 'api.github.com')}/{url}",
+                                headers=h,
+                                auth=auth,
+                                data=data,
+                                timeout=(float(config["github"].get("connection-timeout", "5")),
+                                         float(config["github"].get("read-timeout", "15"))),
+                                ) as r:
+                        r.raise_for_status()
+                        return r.json()
+                except RequestException as e:
+                    if e.response and e.response.status_code and 400 <= e.response.status_code <= 407:
+                        raise
+                    print(f"restarting due to GitHub API error {e}", file=sys.stderr)
+                    return 0
 
-    def _get_docker_cpuset_args(self):
-        node, cpulist = self._get_numa_node()
-        return ["--cpuset-cpus", cpulist, "--cpuset-mems", str(node)]
+        reg_token = post(f"orgs/{config['github']['organization']}/actions/runners/registration-token",
+                         config["github"]["pat-token"])["token"]
+        if False:
+            rem_token = post(f"orgs/{config['github']['organization']}/actions/runners/remove-token",
+                             config["github"]["pat-token"])["token"]
 
-    def init(self):
-        with open("/proc/version", "rt") as f:
-            version = tuple(map(int, KERNEL_VERSION.match(f.read()).groups()[0:3]))
+    with open("/proc/version", "rt") as f:
+        version = tuple(map(int, KERNEL_VERSION.match(f.read()).groups()[0:3]))
 
-        use_var_lib = False
-        if version < (6, 3):
-            use_var_lib = True
-            log(f"Kernel version is {'.'.join(map(str, version))} - using /var/lib for mountable tmp")
-        else:
-            log(f"Kernel version is {'.'.join(map(str, version))} - using standard mountable tmp")
+    # This is due to ID-mapping features: https://github.com/nestybox/sysbox/issues/689#issuecomment-1532460385
+    mountable_tmp_dir = args.tmp_dir
+    if not mountable_tmp_dir and version < (6, 3):
+        mountable_tmp_dir = f"/var/lib/{service_name}"
 
-        if isdir(LINUX_NODE_DIR):
-            nodes = []
-            for f in glob(f"{LINUX_NODE_DIR}/node*"):
-                if isdir(f):
-                    try:
-                        nodes.append(int(f[len(LINUX_NODE_DIR) + 5:]))
-                    except ValueError:
-                        pass
-            nodes.sort()
-            log(f"Found {len(nodes)} NUMA nodes")
-            for node in nodes:
-                with open(f"{LINUX_NODE_DIR}/node{node}/cpulist", "rt") as f:
-                    cpuset = f.read().strip()
-                log(f"NUMA node {node:2d}: cpuset {cpuset}")
-                self.numa_nodes[node] = cpuset
+    if mountable_tmp_dir:
+        if not isabs(mountable_tmp_dir):
+            mountable_tmp_dir = abspath(mountable_tmp_dir)
 
-            self.cpuset_args = self._get_docker_cpuset_args
-        else:
-            self.cpuset_args = lambda: []
+        if not exists(mountable_tmp_dir):
+            makedirs(mountable_tmp_dir, mode=0o700, exist_ok=True)
 
-        # This is due to ID-mapping features:
-        # https://github.com/nestybox/sysbox/issues/689#issuecomment-1532460385
-        mountable_tmp_dir = self.tmp_dir
-        if not mountable_tmp_dir and use_var_lib:
-            mountable_tmp_dir = f"/var/lib/{self.service_name}"
+    with TemporaryDirectory(dir=mountable_tmp_dir, ignore_cleanup_errors=False) as tmp_dir:
+        chmod(tmp_dir, 0o700)
 
-        if mountable_tmp_dir:
-            if not isabs(mountable_tmp_dir):
-                mountable_tmp_dir = abspath(mountable_tmp_dir)
+        reg_f_name = join(tmp_dir, "registration_token")
+        with open(reg_f_name, "wt") as reg_f:
+            reg_f.write(reg_token)
+        chmod(reg_f_name, 0o600)
 
-            if not exists(mountable_tmp_dir):
-                makedirs(mountable_tmp_dir, mode=0o700, exist_ok=True)
+        if False:
+            rem_f_name = join(tmp_dir, "removal_token")
+            with open(rem_f_name, "wt") as rem_f:
+                rem_f.write(rem_token)
+            chmod(rem_f_name, 0o600)
 
-        if not mountable_tmp_dir:
-            mountable_tmp_dir = gettempdir()
+        image = config["service"].get("image", args.image)
+        try:
+            call(["docker", "pull", image])
 
-        self.mountable_tmp_dir = mountable_tmp_dir
+            check_call(["docker", "run", "--rm", "-t", "--runtime", "sysbox-runc",
+                        "--name", service_name,
+                        "-v", f"{tmp_dir}:/home/runner/__secure",
+                        image])
 
-    def launch_runner(self, slot):
-        mountable_tmp_dir = self.mountable_tmp_dir
-
-        with TemporaryDirectory(dir=mountable_tmp_dir, ignore_cleanup_errors=False) as tmp_dir:
-            chmod(tmp_dir, 0o700)
-
-            reg_f_name = join(tmp_dir, "registration_token")
-            with open(reg_f_name, "wt") as reg_f:
-                reg_f.write(reg_token)
-            chmod(reg_f_name, 0o600)
-
-            image = config["service"].get("image", args.image)
-            try:
-                call(["docker", "pull", image])
-
-                check_call(["docker", "run", "--rm", "-t", "--runtime", "sysbox-runc",
-                            "--name", service_name,
-                            "-v", f"{tmp_dir}:/home/runner/__secure",
-                            image])
-
-            except CalledProcessError as e:
-                return e.returncode
-
-    def registration_token(self):
-        config = self.config
-        reg_token = self.reg_token
-        reg_token_expires = self.reg_token_expires
-
-        if reg_token and reg_token_expires and reg_token_expires - datetime.now() > DEFAULT_TOKEN_EXPIRATION_DURATION:
-            return reg_token
-
-        with Session() as s:
-            def post(url, key=None, auth=None, headers=None, data=None):
-                while True:
-                    h = {}
-                    if headers:
-                        h.update(headers)
-                    h.update({"X-GitHub-Api-Version": "2022-11-28",
-                              "Accept": "application/vnd.github+json"})
-                    if key:
-                        h["Authorization"] = f"Bearer {key}"
-                    if auth:
-                        auth = HTTPBasicAuth(*auth)
-                    try:
-                        with s.post(f"https://{config['github'].get('api-host', 'api.github.com')}/{url}",
-                                    headers=h,
-                                    auth=auth,
-                                    data=data,
-                                    timeout=(float(config["github"].get("connection-timeout", "5")),
-                                             float(config["github"].get("read-timeout", "15"))),
-                                    ) as r:
-                            r.raise_for_status()
-                            return r.json()
-                    except RequestException as e:
-                        if e.response and e.response.status_code and 400 <= e.response.status_code <= 407:
-                            raise
-                        print(f"restarting due to GitHub API error {e}", file=sys.stderr)
-                        return 0
-
-            result = post(f"orgs/{config['github']['organization']}/actions/runners/registration-token",
-                          config["github"]["pat-token"])
-            self.reg_token = result["token"]
-            self.reg_token_expires = datetime.fromisoformat(result["expires_at"])
-            return self.reg_token
+        except CalledProcessError as e:
+            return e.returncode
 
 
 if __name__ == "__main__":
