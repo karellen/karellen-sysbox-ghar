@@ -37,6 +37,9 @@ install -Dpm 644 karellen-sysbox-ghar.service -t %{buildroot}%{_unitdir}/
 
 %post
 %systemd_post karellen-sysbox-ghar.service
+if [ $1 -gt 1 ] && systemctl is-enabled karellen-sysbox-ghar.service &>/dev/null; then
+    systemctl reenable karellen-sysbox-ghar.service &>/dev/null || :
+fi
 
 %preun
 %systemd_preun karellen-sysbox-ghar.service
