@@ -12,7 +12,6 @@ BuildRequires: systemd-rpm-macros
 Requires: karellen-sysbox
 Requires: python3
 Requires: python3-requests
-Requires: python3-gevent
 
 Source0: %{name}-%{version}.tar.gz
 
